@@ -29,6 +29,34 @@
 
 > 若希望在无 API Key 环境下本地验证流式效果，可设置 `USE_MOCK=1`，服务将返回内置模拟事件流。
 
+### 语音克隆集成（可选）
+
+- 环境变量：
+  - `VOICE_CLONE_BASE_URL`: 语音克隆服务地址，如 `http://127.0.0.1:8014`
+  - `VOICE_CLONE_API_KEY`: 若服务需要鉴权，填入密钥（可选）
+  - `VOICE_USE_MOCK`: 设为 `1` 时不调用真实服务，返回模拟音频片段
+
+- SSE 音频事件：当请求头包含 `X-Voice-Id`（或 Query `voiceId`）时，文本事件结束后将继续输出：
+  - `audio.chunk`: `data` 为 `{ "b64": "..." }`，表示一段 base64 编码的音频字节
+  - `audio.completed`: 表示音频合成完成，包含 `{ voiceId, sessionId }`
+
+- 示例（POST 触发语音）：
+  ```bash
+  curl -N -X POST "http://localhost:8084/chat/stream" \
+    -H "Accept: text/event-stream" -H "Content-Type: application/json" \
+    -H "X-Voice-Id: demo-voice" \
+    -d '{"input":"这是语音测试","sessionId":"session-env2"}'
+  ```
+
+- 对接的 TTS 接口：`POST {VOICE_CLONE_BASE_URL}/api/tts/stream`，请求体字段：
+  ```json
+  { "text": "...", "session_id": "...", "voice_type": "可选", "save_path": null }
+  ```
+  服务返回字节流，后端将其分块读取并转为 base64，以上述音频事件推送到同一 SSE 连接。
+
+> 若仅测试语音服务本身，可参考你提供的命令：
+> `curl -sS -D headers_env2.txt -X POST http://127.0.0.1:8014/api/tts/stream -H "Content-Type: application/json" -d '{"text": "...", "session_id": "session-env2"}' --output output/long_stream_env2.mp3`
+
 ## 目录结构
 
 ```

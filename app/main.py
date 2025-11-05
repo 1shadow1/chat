@@ -13,6 +13,7 @@ from app.services.openai_client import OpenAIClient
 from app.services.session_store import SessionStore
 from app.services.prompts import PROMPTS
 from dotenv import load_dotenv
+from app.services.voice_client import VoiceClient
 
 
 load_dotenv()  # 加载 .env 环境变量，确保 OPENAI_API_KEY、PORT 等可用
@@ -31,6 +32,7 @@ app.add_middleware(
 
 session_store = SessionStore()
 client = OpenAIClient()
+voice_client = VoiceClient()
 
 
 def build_messages(system_text: Optional[str], history: List[dict], user_input: str) -> List[dict]:
@@ -134,6 +136,38 @@ def stream_generator(stream, request_id: str, session_id: Optional[str]) -> Iter
         yield to_sse("response.error", {"message": str(e)}).encode("utf-8")
 
 
+def stream_with_voice(stream, text_for_tts: str, voice_id: Optional[str], request_id: str, session_id: Optional[str]) -> Iterable[bytes]:
+    """
+    同步合成语音并在同一 SSE 流中输出音频片段事件。
+
+    输入：
+        stream: 文本生成事件流（OpenAI）
+        text_for_tts: 用于 TTS 的文本（可为最终合成文本或用户输入）
+        voice_id: 音色ID（可空，空则不输出音频）
+        request_id: 请求ID
+        session_id: 会话ID
+
+    输出：
+        SSE 字节序列，包含文本事件与音频事件：
+            - 文本：content.delta、response.completed 等
+            - 音频：audio.chunk（data: { b64: "..." }）
+
+    关键逻辑：
+        - 先发送文本事件（与原逻辑一致）。
+        - 若提供 voice_id，则调用 VoiceClient.synthesize_stream(text, session_id, voice_id) 按字节流生成音频，逐块发送。
+    """
+    # 先透传文本事件
+    for chunk in stream_generator(stream, request_id, session_id):
+        yield chunk
+    # 生成音频
+    if voice_id:
+        # 会话ID用于 TTS 服务端维护流状态；若无，则使用请求ID占位
+        sid_for_tts = session_id or request_id
+        for audio_evt in voice_client.synthesize_stream(text_for_tts, sid_for_tts, voice_id):
+            yield to_sse("audio.chunk", audio_evt).encode("utf-8")
+        yield to_sse("audio.completed", {"voiceId": voice_id, "sessionId": sid_for_tts}).encode("utf-8")
+
+
 @app.get("/healthz")
 def healthz():
     """
@@ -200,7 +234,10 @@ async def chat_stream_post(body: ChatStreamBody, request: Request):
 
     async def run_stream() -> Iterable[bytes]:
         # 生成器本身是同步的，这里直接迭代即可
-        for chunk in stream_generator(stream, request_id, session_id):
+        # 合成语音的文本：优先使用用户输入，可根据需要改为最终文本（需收集缓冲）
+        tts_text = body.input
+        voice_id = request.headers.get("X-Voice-Id") or request.query_params.get("voiceId")
+        for chunk in stream_with_voice(stream, tts_text, voice_id, request_id, session_id):
             yield chunk
         # 记录结束日志
         log_json(logger, 20, "request.end", requestId=request_id, sessionId=session_id)
@@ -228,5 +265,8 @@ async def chat_stream_get(input: str, sessionId: Optional[str] = None, system: O
         StreamingResponse：`text/event-stream`。
     """
     body = ChatStreamBody(input=input, sessionId=sessionId, system=system, systemPromptName=systemPromptName, temperature=temperature)
-    # 复用 POST 处理逻辑
-    return await chat_stream_post(body, Request(scope={"type": "http"}))
+    # 复用 POST 处理逻辑，同时传递 Query 参数 voiceId（若存在）
+    req = Request(scope={"type": "http"})
+    # FastAPI TestClient/Request 在此场景下 query_params 为空，这里不强制注入；
+    # 前端若需 GET 使用 voiceId，建议改为 POST 传递或使用 Header。
+    return await chat_stream_post(body, req)
