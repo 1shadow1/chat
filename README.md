@@ -70,6 +70,27 @@
   - `DEBUG sse.content.delta.preview | {"delta_len":57,"preview":"当然可以，我们先从…"}`
   - `INFO sse.output.final.preview | {"text_len":1456,"preview":"最终文本…(截断)"}`
 
+#### 会话级日志文件
+
+- 开启每个会话独立文件：
+  - `SESSION_LOG_ENABLED=1`
+  - `SESSION_LOG_BASE_DIR=/srv/chat/log`
+
+- 结构：在 `<BASE>/<sessionId>/` 目录下生成 `<sessionId>.log`，记录该会话的输入预览、增量预览、最终预览以及生命周期事件。
+
+- 示例：
+  ```env
+  SESSION_LOG_ENABLED=1
+  SESSION_LOG_BASE_DIR=/srv/chat/log
+  LOG_INCLUDE_INPUT=1
+  LOG_INCLUDE_OUTPUT=both
+  LOG_LEVEL=DEBUG
+  ```
+  请求后查看：
+  ```bash
+  tail -n 100 /srv/chat/log/session-demo/session-demo.log
+  ```
+
 ### 语音克隆集成（可选）
 
 - 环境变量：

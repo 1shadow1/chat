@@ -4,6 +4,7 @@ import sys
 from typing import Any, Dict, Optional
 from logging.handlers import RotatingFileHandler
 import re
+from datetime import datetime
 
 
 def setup_logger() -> logging.Logger:
@@ -221,3 +222,42 @@ def build_preview(text: Optional[str], max_chars: int, redact: bool) -> Dict[str
             return {"text_len": len(text), "preview": src}
     except Exception:
         return {"text_len": len(text), "preview": text[:max_chars] + ("…(截断)" if len(text) > max_chars else "")}
+
+
+def write_session_log(session_id: Optional[str], level: str, message: str, payload: Dict[str, Any]) -> None:
+    """
+    将指定事件写入会话级独立日志文件。
+
+    输入：
+        session_id: 会话ID（为空则不写入）
+        level: 文本级别（如 "INFO"、"DEBUG"、"ERROR"）
+        message: 事件名称（如 request.input.preview）
+        payload: 结构化上下文字典（将以 JSON 写入）
+
+    输出：
+        无，写入到 `/srv/chat/log/<sessionId>/<sessionId>.log`（可配置）。
+
+    关键逻辑：
+        - 受环境变量 `SESSION_LOG_ENABLED` 控制，默认关闭；
+        - 路径可通过 `SESSION_LOG_BASE_DIR` 配置，默认 `/srv/chat/log`；
+        - 自动创建目录；采用简单追加写入，不做滚动。
+    """
+    try:
+        if not session_id:
+            return
+        if os.environ.get("SESSION_LOG_ENABLED", "0") != "1":
+            return
+        base_dir = os.environ.get("SESSION_LOG_BASE_DIR", "/srv/chat/log")
+        # 目录：<base>/<sessionId>/，文件：<sessionId>.log
+        target_dir = os.path.join(base_dir, session_id)
+        os.makedirs(target_dir, exist_ok=True)
+        target_file = os.path.join(target_dir, f"{session_id}.log")
+        # 时间戳与消息格式对齐主日志
+        ts = datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
+        import json
+        line = f"{ts} {level} {message} | " + json.dumps(payload, ensure_ascii=False)
+        with open(target_file, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        # 静默失败，避免影响主流程
+        pass

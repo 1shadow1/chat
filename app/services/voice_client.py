@@ -110,6 +110,8 @@ class VoiceClient:
             if cfg.get("include_input"):
                 pv = build_preview(text, cfg["max_chars"], cfg["redact"])
                 log_json(logger, 20, "tts.input.preview", sessionId=session_id, voiceId=voice_id, **pv)
+                from app.utils.logger import write_session_log
+                write_session_log(session_id, "INFO", "tts.input.preview", {"voiceId": voice_id, **pv})
             log_json(logger, 20, "tts.mock.start", sessionId=session_id, voiceId=voice_id, text_len=len(text))
             return VoiceMockStream(text)
 
@@ -122,6 +124,8 @@ class VoiceClient:
         if cfg.get("include_input"):
             pv = build_preview(text, cfg["max_chars"], cfg["redact"])
             log_json(logger, 20, "tts.input.preview", sessionId=session_id, voiceId=voice_id, **pv)
+            from app.utils.logger import write_session_log
+            write_session_log(session_id, "INFO", "tts.input.preview", {"voiceId": voice_id, **pv})
         log_json(logger, 20, "tts.http.start", base_url=self.base_url, sessionId=session_id, voiceId=voice_id, text_len=len(text))
         with httpx.Client(timeout=None) as client:
             headers = {

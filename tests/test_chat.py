@@ -65,6 +65,33 @@ def test_content_logging_preview(monkeypatch):
         pass
 
 
+def test_session_log_files(monkeypatch):
+    """
+    验证开启会话级日志后，会在指定目录下创建 `<sessionId>/<sessionId>.log` 并写入预览事件。
+
+    - 启用：SESSION_LOG_ENABLED=1，SESSION_LOG_BASE_DIR=/srv/chat/log
+    - 触发一次请求后检查文件是否存在且包含 request.input.preview。
+    """
+    sid = "session-log-ut"
+    monkeypatch.setenv("SESSION_LOG_ENABLED", "1")
+    monkeypatch.setenv("SESSION_LOG_BASE_DIR", "/srv/chat/log")
+    monkeypatch.setenv("LOG_INCLUDE_INPUT", "1")
+    monkeypatch.setenv("LOG_INCLUDE_OUTPUT", "final")
+    client = TestClient(app)
+    resp = client.post(
+        "/chat/stream",
+        json={"model": "gpt-4o-mini", "input": "会话日志写入测试", "sessionId": sid},
+        headers={"Accept": "text/event-stream"},
+    )
+    assert resp.status_code == 200
+    target_file = f"/srv/chat/log/{sid}/{sid}.log"
+    # 文件存在并包含输入预览
+    assert os.path.isfile(target_file)
+    with open(target_file, "r", encoding="utf-8") as f:
+        content = f.read()
+    assert "request.input.preview" in content
+
+
 def test_voiceclient_env_loading(monkeypatch):
     """
     验证 VoiceClient 优先从 .env 读取配置；当进程环境 USE_MOCK=1 时强制走模拟。

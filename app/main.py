@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 
 from app.types import ChatStreamBody
-from app.utils.logger import setup_logger, log_json, get_content_log_config, build_preview
+from app.utils.logger import setup_logger, log_json, get_content_log_config, build_preview, write_session_log
 from app.services.openai_client import OpenAIClient
 from app.services.session_store import SessionStore
 from app.services.prompts import PROMPTS
@@ -98,6 +98,7 @@ def stream_generator(stream, request_id: str, session_id: Optional[str]) -> Iter
     """
     # 首事件：meta
     log_json(logger, 20, "sse.response.created", requestId=request_id, sessionId=session_id)
+    write_session_log(session_id, "INFO", "sse.response.created", {"requestId": request_id})
     yield to_sse("response.created", {"requestId": request_id, "sessionId": session_id}).encode("utf-8")
     try:
         for event in stream:
@@ -116,6 +117,7 @@ def stream_generator(stream, request_id: str, session_id: Optional[str]) -> Iter
                     if _content_cfg.get("include_output") in ("delta", "both"):
                         pv = build_preview(delta, _content_cfg["max_chars"], _content_cfg["redact"])
                         log_json(logger, 10, "sse.content.delta.preview", requestId=request_id, **pv)
+                        write_session_log(session_id, "DEBUG", "sse.content.delta.preview", {"requestId": request_id, **pv})
                     yield to_sse("content.delta", {"text": delta}).encode("utf-8")
                     continue
             # 直接透传已知事件
@@ -150,18 +152,22 @@ def stream_generator(stream, request_id: str, session_id: Optional[str]) -> Iter
                 final_text = getattr(final, "output_text", None) or getattr(final, "text", None)
             if usage:
                 log_json(logger, 20, "sse.response.usage.final", requestId=request_id, **(usage if isinstance(usage, dict) else {}))
+                write_session_log(session_id, "INFO", "sse.response.usage.final", {"requestId": request_id, **(usage if isinstance(usage, dict) else {})})
                 yield to_sse("response.usage", usage if isinstance(usage, dict) else {}).encode("utf-8")
             # 可选：记录最终输出预览
             if _content_cfg.get("include_output") in ("final", "both") and final_text:
                 pv = build_preview(final_text, _content_cfg["max_chars"], _content_cfg["redact"])
                 log_json(logger, 20, "sse.output.final.preview", requestId=request_id, **pv)
+                write_session_log(session_id, "INFO", "sse.output.final.preview", {"requestId": request_id, **pv})
         except Exception:
             pass
         log_json(logger, 20, "sse.response.completed.final", requestId=request_id)
+        write_session_log(session_id, "INFO", "sse.response.completed.final", {"requestId": request_id})
         yield to_sse("response.completed", {}).encode("utf-8")
     except Exception as e:
         # 错误时记录输出状态（可选）
         log_json(logger, 40, "sse.response.error", requestId=request_id, error=str(e))
+        write_session_log(session_id, "ERROR", "sse.response.error", {"requestId": request_id, "error": str(e)})
         yield to_sse("response.error", {"message": str(e)}).encode("utf-8")
 
 
@@ -263,11 +269,13 @@ async def chat_stream_post(body: ChatStreamBody, request: Request):
     messages = build_messages(system_text, history, body.input)
 
     log_json(logger, 20, "request.start", requestId=request_id, sessionId=session_id, path="/chat/stream")
+    write_session_log(session_id, "INFO", "request.start", {"requestId": request_id, "path": "/chat/stream"})
     # 可选：记录输入预览
     if _content_cfg.get("include_input"):
         # 提取当前用户输入（忽略历史）
         pv = build_preview(body.input, _content_cfg["max_chars"], _content_cfg["redact"])
         log_json(logger, 20, "request.input.preview", requestId=request_id, messages=len(messages), **pv)
+        write_session_log(session_id, "INFO", "request.input.preview", {"requestId": request_id, "messages": len(messages), **pv})
     stream = client.stream_response(messages, body.temperature or 0.7)
 
     async def run_stream() -> Iterable[bytes]:
@@ -279,6 +287,7 @@ async def chat_stream_post(body: ChatStreamBody, request: Request):
             yield chunk
         # 记录结束日志
         log_json(logger, 20, "request.end", requestId=request_id, sessionId=session_id)
+        write_session_log(session_id, "INFO", "request.end", {"requestId": request_id})
         # 写入会话历史：将最后一轮助手回复粗略追加（此处近似，真实可在收集完整文本后追加）
         # 简化：不在生成器中收集全文，后续可优化。
         # 这里只追加一个占位，避免误删历史。
