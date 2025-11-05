@@ -29,6 +29,47 @@
 
 > 若希望在无 API Key 环境下本地验证流式效果，可设置 `USE_MOCK=1`，服务将返回内置模拟事件流。
 
+### 日志配置
+
+- 复制 `.env.example` 为 `.env` 后，按需配置：
+  - `LOG_TO_FILE=1` 开启文件持久化（默认仅控制台）；
+  - `LOG_FILE_PATH=/srv/chat/log/chat.log` 指定日志文件；
+  - `LOG_LEVEL=DEBUG` 查看细粒度增量与音频块日志；
+
+- 默认行为：若 `LOG_FILE_PATH` 未设置，服务会优先写入 `/srv/chat/log/chat.log`（如果目录存在），否则写入 `/srv/chat/logs/chat.log`。
+
+- 示例：直接使用 uvicorn 启动也会加载 `.env` 并写入日志文件。
+  ```bash
+  # 确保有 .env 并包含 LOG_TO_FILE/LOG_FILE_PATH/LOG_LEVEL
+  uvicorn app.main:app --host 0.0.0.0 --port 8084
+  # 验证日志：
+  tail -n 100 /srv/chat/log/chat.log
+  ```
+
+#### 内容日志与脱敏
+
+- 为降低泄露风险，默认不记录原始输入/输出文本；可通过以下变量精确开启：
+  - `LOG_INCLUDE_INPUT=0|1` 是否记录用户输入预览；
+  - `LOG_INCLUDE_OUTPUT=none|delta|final|both` 输出记录模式；
+  - `LOG_CONTENT_MAX_CHARS=1000` 单条预览最大字符数（超出截断）；
+  - `LOG_REDACT_ENABLED=1` 开启基础脱敏（邮箱、手机号、疑似密钥）。
+
+- 示例：记录最终输出预览并脱敏（建议在开发环境）：
+  ```env
+  LOG_LEVEL=DEBUG
+  LOG_TO_FILE=1
+  LOG_FILE_PATH=/srv/chat/log/chat.log
+  LOG_INCLUDE_INPUT=1
+  LOG_INCLUDE_OUTPUT=final
+  LOG_CONTENT_MAX_CHARS=800
+  LOG_REDACT_ENABLED=1
+  ```
+
+- 产生的日志示例：
+  - `INFO request.input.preview | {"messages":2,"text_len":1234,"preview":"你好，我想了解…"}`
+  - `DEBUG sse.content.delta.preview | {"delta_len":57,"preview":"当然可以，我们先从…"}`
+  - `INFO sse.output.final.preview | {"text_len":1456,"preview":"最终文本…(截断)"}`
+
 ### 语音克隆集成（可选）
 
 - 环境变量：

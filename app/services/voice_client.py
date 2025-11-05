@@ -103,11 +103,26 @@ class VoiceClient:
             or (os.environ.get("VOICE_USE_MOCK") == "1")
         )
         if runtime_mock or not self.base_url:
+            from app.utils.logger import log_json, setup_logger, get_content_log_config, build_preview
+            logger = setup_logger()
+            cfg = get_content_log_config()
+            # 可选：记录 TTS 文本预览（受 include_input 控制）
+            if cfg.get("include_input"):
+                pv = build_preview(text, cfg["max_chars"], cfg["redact"])
+                log_json(logger, 20, "tts.input.preview", sessionId=session_id, voiceId=voice_id, **pv)
+            log_json(logger, 20, "tts.mock.start", sessionId=session_id, voiceId=voice_id, text_len=len(text))
             return VoiceMockStream(text)
 
         import httpx
 
         # 适配你提供的接口：POST {base}/api/tts/stream，JSON体为 {text, session_id, voice_id?, format?}
+        from app.utils.logger import log_json, setup_logger, get_content_log_config, build_preview
+        logger = setup_logger()
+        cfg = get_content_log_config()
+        if cfg.get("include_input"):
+            pv = build_preview(text, cfg["max_chars"], cfg["redact"])
+            log_json(logger, 20, "tts.input.preview", sessionId=session_id, voiceId=voice_id, **pv)
+        log_json(logger, 20, "tts.http.start", base_url=self.base_url, sessionId=session_id, voiceId=voice_id, text_len=len(text))
         with httpx.Client(timeout=None) as client:
             headers = {
                 "Content-Type": "application/json",
@@ -126,6 +141,7 @@ class VoiceClient:
                 resp.raise_for_status()
                 # 校验返回的内容类型是否为音频
                 ct = resp.headers.get("content-type", "")
+                log_json(logger, 20, "tts.http.headers", content_type=ct, status=resp.status_code)
                 if not ct.startswith("audio/"):
                     # 读取部分错误内容用于诊断
                     preview = ""
@@ -137,9 +153,12 @@ class VoiceClient:
                             preview = str(raw)
                     except Exception:
                         preview = ""
+                    log_json(logger, 40, "tts.http.non_audio", status=resp.status_code, content_type=ct, preview=preview)
                     raise RuntimeError(f"TTS responded non-audio content-type: {ct}, status={resp.status_code}, preview={preview}")
                 for chunk in resp.iter_bytes():
                     if not chunk:
                         continue
                     b64 = base64.b64encode(chunk).decode("ascii")
+                    log_json(logger, 10, "tts.http.chunk", size=len(chunk))
                     yield {"b64": b64}
+            log_json(logger, 20, "tts.http.completed", sessionId=session_id, voiceId=voice_id)

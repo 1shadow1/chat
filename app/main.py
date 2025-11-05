@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 
 from app.types import ChatStreamBody
-from app.utils.logger import setup_logger, log_json
+from app.utils.logger import setup_logger, log_json, get_content_log_config, build_preview
 from app.services.openai_client import OpenAIClient
 from app.services.session_store import SessionStore
 from app.services.prompts import PROMPTS
@@ -19,6 +19,7 @@ from app.services.voice_client import VoiceClient
 load_dotenv()  # 加载 .env 环境变量，确保 OPENAI_API_KEY、PORT 等可用
 logger = setup_logger()
 app = FastAPI(title="Chat SSE Service")
+_content_cfg = get_content_log_config()
 
 # CORS 配置
 allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
@@ -96,6 +97,7 @@ def stream_generator(stream, request_id: str, session_id: Optional[str]) -> Iter
         - 末尾尝试读取最终 usage 并输出。
     """
     # 首事件：meta
+    log_json(logger, 20, "sse.response.created", requestId=request_id, sessionId=session_id)
     yield to_sse("response.created", {"requestId": request_id, "sessionId": session_id}).encode("utf-8")
     try:
         for event in stream:
@@ -109,16 +111,28 @@ def stream_generator(stream, request_id: str, session_id: Optional[str]) -> Iter
                 else:
                     delta = getattr(event, "delta", None)
                 if delta:
+                    log_json(logger, 10, "sse.content.delta", requestId=request_id, len=len(delta))
+                    # 可选：记录增量预览
+                    if _content_cfg.get("include_output") in ("delta", "both"):
+                        pv = build_preview(delta, _content_cfg["max_chars"], _content_cfg["redact"])
+                        log_json(logger, 10, "sse.content.delta.preview", requestId=request_id, **pv)
                     yield to_sse("content.delta", {"text": delta}).encode("utf-8")
                     continue
             # 直接透传已知事件
             if etype in ("message.start", "message.stop"):
+                log_json(logger, 10, "sse.message", requestId=request_id, type=etype)
                 yield to_sse(etype, data if isinstance(data, dict) else {}).encode("utf-8")
                 continue
             if etype in ("response.usage",):
+                try:
+                    usage = data if isinstance(data, dict) else {}
+                except Exception:
+                    usage = {}
+                log_json(logger, 20, "sse.response.usage", requestId=request_id, **usage)
                 yield to_sse("response.usage", data if isinstance(data, dict) else {}).encode("utf-8")
                 continue
             if etype in ("response.completed",):
+                log_json(logger, 20, "sse.response.completed", requestId=request_id)
                 yield to_sse("response.completed", data if isinstance(data, dict) else {}).encode("utf-8")
                 continue
             # 未知事件：忽略或记录
@@ -127,12 +141,27 @@ def stream_generator(stream, request_id: str, session_id: Optional[str]) -> Iter
         try:
             final = stream.get_final_response()
             usage = final.get("usage") if isinstance(final, dict) else getattr(final, "usage", None)
+            # 聚合 final 文本（若可用）
+            final_text = None
+            # OpenAI Responses 最终对象可能含有 output_text 或 content；容错提取
+            if isinstance(final, dict):
+                final_text = final.get("output_text") or final.get("text")
+            else:
+                final_text = getattr(final, "output_text", None) or getattr(final, "text", None)
             if usage:
+                log_json(logger, 20, "sse.response.usage.final", requestId=request_id, **(usage if isinstance(usage, dict) else {}))
                 yield to_sse("response.usage", usage if isinstance(usage, dict) else {}).encode("utf-8")
+            # 可选：记录最终输出预览
+            if _content_cfg.get("include_output") in ("final", "both") and final_text:
+                pv = build_preview(final_text, _content_cfg["max_chars"], _content_cfg["redact"])
+                log_json(logger, 20, "sse.output.final.preview", requestId=request_id, **pv)
         except Exception:
             pass
+        log_json(logger, 20, "sse.response.completed.final", requestId=request_id)
         yield to_sse("response.completed", {}).encode("utf-8")
     except Exception as e:
+        # 错误时记录输出状态（可选）
+        log_json(logger, 40, "sse.response.error", requestId=request_id, error=str(e))
         yield to_sse("response.error", {"message": str(e)}).encode("utf-8")
 
 
@@ -163,8 +192,12 @@ def stream_with_voice(stream, text_for_tts: str, voice_id: Optional[str], reques
     if voice_id:
         # 会话ID用于 TTS 服务端维护流状态；若无，则使用请求ID占位
         sid_for_tts = session_id or request_id
+        log_json(logger, 20, "tts.request.start", requestId=request_id, sessionId=sid_for_tts, voiceId=voice_id)
         for audio_evt in voice_client.synthesize_stream(text_for_tts, sid_for_tts, voice_id):
+            size = len(audio_evt.get("b64", "")) if isinstance(audio_evt, dict) else 0
+            log_json(logger, 10, "tts.chunk", requestId=request_id, size=size)
             yield to_sse("audio.chunk", audio_evt).encode("utf-8")
+        log_json(logger, 20, "tts.request.completed", requestId=request_id, sessionId=sid_for_tts, voiceId=voice_id)
         yield to_sse("audio.completed", {"voiceId": voice_id, "sessionId": sid_for_tts}).encode("utf-8")
 
 
@@ -230,6 +263,11 @@ async def chat_stream_post(body: ChatStreamBody, request: Request):
     messages = build_messages(system_text, history, body.input)
 
     log_json(logger, 20, "request.start", requestId=request_id, sessionId=session_id, path="/chat/stream")
+    # 可选：记录输入预览
+    if _content_cfg.get("include_input"):
+        # 提取当前用户输入（忽略历史）
+        pv = build_preview(body.input, _content_cfg["max_chars"], _content_cfg["redact"])
+        log_json(logger, 20, "request.input.preview", requestId=request_id, messages=len(messages), **pv)
     stream = client.stream_response(messages, body.temperature or 0.7)
 
     async def run_stream() -> Iterable[bytes]:
