@@ -16,18 +16,18 @@ def test_healthz():
     assert resp.json()["status"] == "ok"
 
 
-def test_sse_post_handshake():
+def test_sse_post_handshake_text_only():
     client = TestClient(app)
-    resp = client.post("/chat/stream", json={"model": "gpt-4o-mini", "input": "你好", "sessionId": "session-test"}, headers={"Accept": "text/event-stream", "X-Voice-Id": "mock-voice"})
+    resp = client.post("/chat/stream", json={"model": "gpt-4o-mini", "input": "你好", "sessionId": "session-test"}, headers={"Accept": "text/event-stream"})
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
-    # 读取部分响应内容，验证有文本与音频事件
+    # 读取部分响应内容，验证仅有文本事件
     body_text = resp.text
     assert "event: response.created" in body_text
     assert "event: content.delta" in body_text
     assert "event: response.completed" in body_text
-    # 当 VOICE_USE_MOCK=1 或未配置 base_url 时，应有音频事件
-    assert "event: audio.completed" in body_text
+    # 不再输出音频事件
+    assert "event: audio.completed" not in body_text
 
 
 def test_content_logging_preview(monkeypatch):
@@ -92,29 +92,7 @@ def test_session_log_files(monkeypatch):
     assert "request.input.preview" in content
 
 
-def test_line_stream_mock(monkeypatch):
-    """
-    验证行流本地写入：开启 VOICE_LINE_USE_MOCK 后，分句内容写入 `<sessionId>.lines`。
-
-    - 设置 VOICE_LINE_USE_MOCK=1 与目录；
-    - 触发包含标点的文本以产生多行写入；
-    - 检查文件存在且至少包含一行。
-    """
-    sid = "session-line-ut"
-    monkeypatch.setenv("VOICE_LINE_USE_MOCK", "1")
-    monkeypatch.setenv("VOICE_LINE_DIR", "/srv/chat/log")
-    client = TestClient(app)
-    resp = client.post(
-        "/chat/stream",
-        json={"model": "gpt-4o-mini", "input": "你好！今天安排如下：一、写代码；二、跑测试；三、复盘。", "sessionId": sid},
-        headers={"Accept": "text/event-stream"},
-    )
-    assert resp.status_code == 200
-    path = f"/srv/chat/log/{sid}/{sid}.lines"
-    assert os.path.isfile(path)
-    with open(path, "r", encoding="utf-8") as f:
-        lines = [ln.strip() for ln in f.readlines() if ln.strip()]
-    assert len(lines) >= 2
+# 已移除行流断句与写入逻辑，相应测试删除
 
 
 def test_voiceclient_env_loading(monkeypatch):
