@@ -91,6 +91,34 @@
   tail -n 100 /srv/chat/log/session-demo/session-demo.log
   ```
 
+### 行流式推送（分句）
+
+- 作用：将增量文本自动断句并逐行推送到行流服务或写入本地文件，文件名为 `sessionId`，便于下游 `/srv/voice_clone` 按行消费。
+
+- 配置：
+  - `VOICE_LINE_BASE_URL` 行流HTTP服务基础地址（如 `http://127.0.0.1:8015`）；留空则使用本地写入。
+  - `VOICE_LINE_USE_MOCK=1` 仅写本地文件（默认开启便于开发）。
+  - `VOICE_LINE_DIR=/srv/chat/log` 本地文件目录。
+
+- 本地写入结构：在 `<VOICE_LINE_DIR>/<sessionId>/<sessionId>.lines` 文件中按行追加。
+
+- 验证：
+  ```bash
+  # 开启内容预览与行流本地写入
+  export LOG_INCLUDE_OUTPUT=both
+  export VOICE_LINE_USE_MOCK=1
+  export VOICE_LINE_DIR=/srv/chat/log
+  uvicorn app.main:app --host 0.0.0.0 --port 8084
+
+  # 发起请求
+  curl -N -H "Accept: text/event-stream" -H "Content-Type: application/json" \
+    -d '{"model":"gpt-4o-mini","input":"请分点说明今天的安排。","sessionId":"session-demo"}' \
+    http://localhost:8084/chat/stream
+
+  # 查看分句文件
+  cat /srv/chat/log/session-demo/session-demo.lines
+  ```
+
 ### 语音克隆集成（可选）
 
 - 环境变量：

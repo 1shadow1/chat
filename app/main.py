@@ -9,6 +9,8 @@ from fastapi.responses import StreamingResponse, JSONResponse
 
 from app.types import ChatStreamBody
 from app.utils.logger import setup_logger, log_json, get_content_log_config, build_preview, write_session_log
+from app.utils.segmenter import SentenceSegmenter
+from app.services.line_client import LineClient
 from app.services.openai_client import OpenAIClient
 from app.services.session_store import SessionStore
 from app.services.prompts import PROMPTS
@@ -34,6 +36,7 @@ app.add_middleware(
 session_store = SessionStore()
 client = OpenAIClient()
 voice_client = VoiceClient()
+line_client = LineClient()
 
 
 def build_messages(system_text: Optional[str], history: List[dict], user_input: str) -> List[dict]:
@@ -101,6 +104,7 @@ def stream_generator(stream, request_id: str, session_id: Optional[str]) -> Iter
     write_session_log(session_id, "INFO", "sse.response.created", {"requestId": request_id})
     yield to_sse("response.created", {"requestId": request_id, "sessionId": session_id}).encode("utf-8")
     try:
+        seg = SentenceSegmenter()
         for event in stream:
             etype = getattr(event, "type", None) or getattr(event, "event_type", None) or ""
             data = getattr(event, "data", None)
@@ -118,6 +122,12 @@ def stream_generator(stream, request_id: str, session_id: Optional[str]) -> Iter
                         pv = build_preview(delta, _content_cfg["max_chars"], _content_cfg["redact"])
                         log_json(logger, 10, "sse.content.delta.preview", requestId=request_id, **pv)
                         write_session_log(session_id, "DEBUG", "sse.content.delta.preview", {"requestId": request_id, **pv})
+                    # 断句并推送到行流
+                    try:
+                        for s in seg.feed(delta):
+                            line_client.send_line(session_id, s)
+                    except Exception:
+                        pass
                     yield to_sse("content.delta", {"text": delta}).encode("utf-8")
                     continue
             # 直接透传已知事件
@@ -159,6 +169,12 @@ def stream_generator(stream, request_id: str, session_id: Optional[str]) -> Iter
                 pv = build_preview(final_text, _content_cfg["max_chars"], _content_cfg["redact"])
                 log_json(logger, 20, "sse.output.final.preview", requestId=request_id, **pv)
                 write_session_log(session_id, "INFO", "sse.output.final.preview", {"requestId": request_id, **pv})
+        except Exception:
+            pass
+        # 流结束时 flush 剩余未完成句子
+        try:
+            for s in seg.flush():
+                line_client.send_line(session_id, s)
         except Exception:
             pass
         log_json(logger, 20, "sse.response.completed.final", requestId=request_id)

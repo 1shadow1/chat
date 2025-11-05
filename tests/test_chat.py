@@ -92,6 +92,31 @@ def test_session_log_files(monkeypatch):
     assert "request.input.preview" in content
 
 
+def test_line_stream_mock(monkeypatch):
+    """
+    验证行流本地写入：开启 VOICE_LINE_USE_MOCK 后，分句内容写入 `<sessionId>.lines`。
+
+    - 设置 VOICE_LINE_USE_MOCK=1 与目录；
+    - 触发包含标点的文本以产生多行写入；
+    - 检查文件存在且至少包含一行。
+    """
+    sid = "session-line-ut"
+    monkeypatch.setenv("VOICE_LINE_USE_MOCK", "1")
+    monkeypatch.setenv("VOICE_LINE_DIR", "/srv/chat/log")
+    client = TestClient(app)
+    resp = client.post(
+        "/chat/stream",
+        json={"model": "gpt-4o-mini", "input": "你好！今天安排如下：一、写代码；二、跑测试；三、复盘。", "sessionId": sid},
+        headers={"Accept": "text/event-stream"},
+    )
+    assert resp.status_code == 200
+    path = f"/srv/chat/log/{sid}/{sid}.lines"
+    assert os.path.isfile(path)
+    with open(path, "r", encoding="utf-8") as f:
+        lines = [ln.strip() for ln in f.readlines() if ln.strip()]
+    assert len(lines) >= 2
+
+
 def test_voiceclient_env_loading(monkeypatch):
     """
     验证 VoiceClient 优先从 .env 读取配置；当进程环境 USE_MOCK=1 时强制走模拟。
